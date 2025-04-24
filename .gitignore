@@ -361,3 +361,9 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# 개인 기록 파일 무시
+Client/comdata.dat
+Client/userdata.dat
+client2/comdata.dat
+client2/userdata.dat
