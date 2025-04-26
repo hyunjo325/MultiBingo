@@ -1,4 +1,4 @@
-#pragma once
+Ôªø#pragma once
 #include <iostream>
 #include <map>
 #include <vector>
@@ -7,216 +7,282 @@
 #include <thread>
 #include <sstream>
 #include <string>
-#include <winsock2.h>  // Windows º“ƒœ ∂Û¿Ã∫Í∑Ø∏Æ
-#pragma comment(lib, "ws2_32.lib")  // º“ƒœ ∂Û¿Ã∫Í∑Ø∏Æ ∏µ≈©
+#include <asio.hpp>
+#include <bson/bson.h>
+#include <mongoc/mongoc.h>
+
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
+using asio::ip::tcp;
 using namespace std;
 struct Message {
-    int senderID = 0;      // πﬂΩ≈¿⁄ ID
-    int receiverID = 0;    // ºˆΩ≈¿⁄ ID
-    string content; // ∏ﬁΩ√¡ˆ ≥ªøÎ
+    int senderID = 0;      // Î∞úÏã†Ïûê ID
+    int receiverID = 0;    // ÏàòÏã†Ïûê ID
+    string content; // Î©îÏãúÏßÄ ÎÇ¥Ïö©
+};
+struct UserInfo {
+    string nickname;
+    int wins;
+    int losses;
+    int clientID;
 };
 struct GameRoom {
     int player1ID;
-    SOCKET player1Socket;
+    shared_ptr<tcp::socket> player1Socket;
     int player2ID;
-    SOCKET player2Socket;
+    shared_ptr<tcp::socket> player2Socket;
     int player1Status = 0;
     int player2Status = 0;
     int gamecount = 0;
     int notendcnt[2] = { 0, 0 };
+    UserInfo player1info;
+    UserInfo player2info;
 };
-map<int, GameRoom> gameRooms; // ∞‘¿” πÊ ∏Ò∑œ
-mutex gameRoomsMutex;         // πÊ ∏Ò∑œ¿ª ∫∏»£«œ¥¬ π¬≈ÿΩ∫
+map<int, GameRoom> gameRooms; // Í≤åÏûÑ Î∞© Î™©Î°ù
+mutex gameRoomsMutex;         // Î∞© Î™©Î°ùÏùÑ Î≥¥Ìò∏ÌïòÎäî ÎÆ§ÌÖçÏä§
 
-map<int, SOCKET> clients; // ≈¨∂Û¿Ãæ∆Æ IDøÕ º“ƒœ¿ª ∏≈«Œ
+map<int, shared_ptr<tcp::socket>> clients; // ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ IDÏôÄ ÏÜåÏºìÏùÑ Îß§Ìïë
 mutex clientsMutex;
 
+int roomID = 0; // Î∞© ID Ïπ¥Ïö¥ÌÑ∞
+queue<pair<UserInfo, shared_ptr<tcp::socket>>> waitingQueue; // ÎåÄÍ∏∞ Ï§ëÏù∏ ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ Î™©Î°ù
 
 void handleClientDisconnection(int clientID) {
-    lock_guard<mutex> lock(gameRoomsMutex);
+    cout << "[DEBUG] disconnection ÏßÑÏûÖ\n";
+    //lock_guard<mutex> lock(gameRoomsMutex);
 
     for (auto it = gameRooms.begin(); it != gameRooms.end(); ++it) {
         GameRoom& room = it->second;
 
-        if ((room.player1Status != -1 || room.player2Status != -1) && room.player1ID == clientID || room.player2ID == clientID) {
-            std::cout << "«√∑π¿ÃæÓ " << clientID << "∞° ≥™∞¨Ω¿¥œ¥Ÿ. πÊ¿ª ¡¶∞≈«’¥œ¥Ÿ.\n";
+        if ((room.player1ID == clientID || room.player2ID == clientID) &&
+            (room.player1Status != -1 || room.player2Status != -1)) {
 
-            // ≥™∏”¡ˆ «√∑π¿ÃæÓø°∞‘ ø¨∞· ¡æ∑· æÀ∏≤
-            if (room.player1ID == clientID&& room.player2Status != -1) {
-                send(room.player2Socket, "notice#ªÛ¥Î∞° ∞‘¿”¿ª ≥™∞¨Ω¿¥œ¥Ÿ.", strlen("notice#ªÛ¥Î∞° ∞‘¿”¿ª ≥™∞¨Ω¿¥œ¥Ÿ."), 0);
-                closesocket(room.player2Socket);
+            cout << "[DEBUG] Ïú†Ìö®Ìïú Î∞© Ï∞æÏùå, ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ ID: " << clientID << "\n";
+
+            // ÏÉÅÎåÄ ÏÜåÏºìÏùÑ ÏïàÏ†ÑÌïòÍ≤å Ï∂îÏ∂ú
+            shared_ptr<tcp::socket> otherSocket =
+                (room.player1ID == clientID) ? room.player2Socket : room.player1Socket;
+
+            // ÏïåÎ¶º Î∞è ÏÜåÏºì Ï¢ÖÎ£å Ï≤òÎ¶¨ (ÏòàÏô∏ Î∞©ÏßÄ)
+            try {
+                if (otherSocket && otherSocket->is_open()) {
+                    asio::write(*otherSocket, asio::buffer("notice#ÏÉÅÎåÄÍ∞Ä Í≤åÏûÑÏùÑ ÎÇòÍ∞îÏäµÎãàÎã§."));
+                    otherSocket->shutdown(tcp::socket::shutdown_both);
+                    otherSocket->close();
+                }
             }
-            else if(room.player2ID == clientID && room.player1Status != -1){
-                send(room.player1Socket, "notice#ªÛ¥Î∞° ∞‘¿”¿ª ≥™∞¨Ω¿¥œ¥Ÿ.", strlen("notice#ªÛ¥Î∞° ∞‘¿”¿ª ≥™∞¨Ω¿¥œ¥Ÿ."), 0);
-                closesocket(room.player1Socket);
+            catch (const std::exception& e) {
+                cerr << "[ERROR] ÏÉÅÎåÄ ÏÜåÏºì ÏïåÎ¶º Ïã§Ìå®: " << e.what() << "\n";
             }
 
-            // πÊ ªË¡¶
+            // Î∞© Ï†úÍ±∞
             gameRooms.erase(it);
-            break;
+            cout << "[DEBUG] Î∞© Ï†úÍ±∞ ÏôÑÎ£å\n";
+            return;
         }
     }
+
+    cout << "[DEBUG] disconnection ÎåÄÏÉÅ ÏóÜÏùå\n";
 }
 
-void handleClient(SOCKET clientSocket, int clientId) {
+
+
+pair<bool, pair<int, int>> loginOrRegisterNickname(shared_ptr<tcp::socket> clientSocket, const string& nickname) {
+    mongoc_client_t* mongoClient = mongoc_client_new("mongodb://localhost:27017");
+    if (!mongoClient) {
+        cerr << "[MongoDB] ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ ÏÉùÏÑ± Ïã§Ìå®" << endl;
+        return { false, {0, 0} };
+    }
+
+    mongoc_collection_t* collection = mongoc_client_get_collection(mongoClient, "bingo_db", "players");
+    bson_t* query = BCON_NEW("nickname", BCON_UTF8(nickname.c_str()));
+    mongoc_cursor_t* cursor = mongoc_collection_find_with_opts(collection, query, NULL, NULL);
+
+    const bson_t* result;
+    bson_iter_t iter;
+    int wins = 0, losses = 0;
+
+    if (mongoc_cursor_next(cursor, &result)) {
+        // Í∏∞Ï°¥ ÏÇ¨Ïö©Ïûê Î°úÍ∑∏Ïù∏
+        if (bson_iter_init_find(&iter, result, "win") && BSON_ITER_HOLDS_INT32(&iter))
+            wins = bson_iter_int32(&iter);
+        if (bson_iter_init_find(&iter, result, "lose") && BSON_ITER_HOLDS_INT32(&iter))
+            losses = bson_iter_int32(&iter);
+
+        string msg = "login#" + nickname + "#" + to_string(wins) + "#" + to_string(losses);
+        cout << "[MongoDB] Î°úÍ∑∏Ïù∏ ÏÑ±Í≥µ: " << msg << endl;
+        asio::write(*clientSocket, asio::buffer(msg));
+    }
+    else {
+        // Ïã†Í∑ú ÏÇ¨Ïö©Ïûê Îì±Î°ù
+        bson_t* doc = BCON_NEW(
+            "nickname", BCON_UTF8(nickname.c_str()),
+            "win", BCON_INT32(0),
+            "lose", BCON_INT32(0)
+        );
+        mongoc_collection_insert_one(collection, doc, NULL, NULL, NULL);
+        bson_destroy(doc);
+
+        string msg = "register#" + nickname + "#0#0";
+        cout << "[MongoDB] ÌöåÏõêÍ∞ÄÏûÖ ÏôÑÎ£å: " << msg << endl;
+        asio::write(*clientSocket, asio::buffer(msg));
+    }
+
+    mongoc_cursor_destroy(cursor);
+    bson_destroy(query);
+    mongoc_collection_destroy(collection);
+    mongoc_client_destroy(mongoClient);
+
+    return { true, {wins, losses} };
+}
+
+void updateWinLoss(const string& nickname, bool isWin) {
+    mongoc_client_t* client = mongoc_client_new("mongodb://localhost:27017");
+    if (!client) {
+        cerr << "[MongoDB] ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ Ïó∞Í≤∞ Ïã§Ìå®" << endl;
+        return;
+    }
+
+    mongoc_collection_t* collection = mongoc_client_get_collection(client, "bingo_db", "players");
+
+    bson_t* query = BCON_NEW("nickname", BCON_UTF8(nickname.c_str()));
+    bson_t* update = bson_new();
+    bson_t inc;  // '$inc' ÌïÑÎìúÏóê Îì§Ïñ¥Í∞à Î¨∏ÏÑú
+
+    BSON_APPEND_DOCUMENT_BEGIN(update, "$inc", &inc);
+    if (isWin) {
+        BSON_APPEND_INT32(&inc, "win", 1);
+    }
+    else {
+        BSON_APPEND_INT32(&inc, "lose", 1);
+    }
+    bson_append_document_end(update, &inc);
+
+
+    bson_error_t error;
+    if (!mongoc_collection_update_one(collection, query, update, NULL, NULL, &error)) {
+        cerr << "[MongoDB] ÏäπÌå® ÏóÖÎç∞Ïù¥Ìä∏ Ïã§Ìå®: " << error.message << endl;
+    }
+
+    // Ï†ïÎ¶¨
+    bson_destroy(query);
+    bson_destroy(update);
+    mongoc_collection_destroy(collection);
+    mongoc_client_destroy(client);
+}
+
+void handleClient(shared_ptr<tcp::socket> clientSocket, UserInfo clientInfo) {
     static int boardsize = 0;
     int nowroomID = 0;
     char buffer[BUFFER_SIZE];
+
     while (true) {
-        int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE, 0);
-        if (bytesReceived <= 0) {
-            cout << clientId <<"≈¨∂Û¿Ãæ∆Æ ø¨∞· ¡æ∑·\n";
-            if (gameRooms[nowroomID].player1ID == clientId) {
-                gameRooms[nowroomID].player1Status = -1;
-            }
-            else if (gameRooms[nowroomID].player2ID == clientId) {
-                gameRooms[nowroomID].player2Status = -1;
-            }
-            handleClientDisconnection(clientId);
-            closesocket(clientSocket);
+        asio::error_code ec;
+        size_t len = clientSocket->read_some(asio::buffer(buffer), ec);
+        if (ec || len == 0) {
+            cout << clientInfo.clientID << " ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ Ïó∞Í≤∞ Ï¢ÖÎ£å\n";
+            handleClientDisconnection(clientInfo.clientID);
+            clientSocket->close();
             break;
         }
-
-        string receivedMessage;
-        if (bytesReceived > 0) {
-            buffer[bytesReceived] = '\0';  // ºˆΩ≈«— µ•¿Ã≈Õ ≥°ø° NULL πÆ¿⁄ √ﬂ∞°
-            receivedMessage = string(buffer);
-            cout << receivedMessage;
-        }
-        vector<std::string> parts;
-        parts.clear();
+        buffer[len] = '\0';
+        cout << buffer << endl;
+        string receivedMessage(buffer);
         istringstream ss(receivedMessage);
         string item;
-        // '#' ±‚¡ÿ¿∏∑Œ ∫–«“
-        while (getline(ss, item, '#')) {
-            parts.push_back(item);
-        }
-        // ∆ƒΩÃ ∞·∞˙ √‚∑¬
+        vector<string> parts;
+        while (getline(ss, item, '#')) parts.push_back(item);
+
+        if (parts.empty()) continue;
+
+        lock_guard<mutex> lock(gameRoomsMutex);
         if (parts[0] == "board") {
             nowroomID = stoi(parts[1]);
-            lock_guard<mutex> lock(gameRoomsMutex);
-            if (gameRooms[nowroomID].player1ID == stoi(parts[2])) {
-                send(gameRooms[nowroomID].player2Socket, receivedMessage.c_str(), receivedMessage.length(), 0);
-                cout << "plaer1 ∫∏µÂ " << receivedMessage << "\n";
-            }
-            else if (gameRooms[nowroomID].player2ID == stoi(parts[2])) {
-                send(gameRooms[nowroomID].player1Socket, receivedMessage.c_str(), receivedMessage.length(), 0);
-                cout << "plaer2 ∫∏µÂ " << receivedMessage << "\n";
-            }
-            
+            int senderID = stoi(parts[2]);
+            shared_ptr<tcp::socket> targetSocket = (gameRooms[nowroomID].player1ID == senderID)
+                ? gameRooms[nowroomID].player2Socket
+                : gameRooms[nowroomID].player1Socket;
+            asio::write(*targetSocket, asio::buffer(receivedMessage));
         }
         else if (parts[0] == "done") {
             nowroomID = stoi(parts[1]);
-            lock_guard<mutex> lock(gameRoomsMutex);
-            if (gameRooms[nowroomID].player1ID == stoi(parts[2])) {
-                gameRooms[nowroomID].player1Status = 1;
-            }
-            else if (gameRooms[nowroomID].player2ID == stoi(parts[2])) {
-                gameRooms[nowroomID].player2Status = 1;
-            }
+            int senderID = stoi(parts[2]);
+            if (gameRooms[nowroomID].player1ID == senderID) gameRooms[nowroomID].player1Status = 1;
+            if (gameRooms[nowroomID].player2ID == senderID) gameRooms[nowroomID].player2Status = 1;
             if (gameRooms[nowroomID].player1Status == 1 && gameRooms[nowroomID].player2Status == 1) {
-                cout << "∫∏µÂºº∆√øœ∑·\n";
-                string stmsg = "set";
-                send(gameRooms[nowroomID].player1Socket, stmsg.c_str(), stmsg.length(), 0);
-                send(gameRooms[nowroomID].player2Socket, stmsg.c_str(), stmsg.length(), 0);
-                cout << nowroomID << " " << stmsg << "\n";
-                //Sleep(1500);
-                stmsg = "turn#";
-                stmsg += parts[1];
-                stmsg += "#";
-                stmsg += to_string(gameRooms[nowroomID].player1ID);
-                send(gameRooms[nowroomID].player1Socket, stmsg.c_str(), stmsg.length(), 0);
-                send(gameRooms[nowroomID].player2Socket, stmsg.c_str(), stmsg.length(), 0);
-                cout << nowroomID << " " << stmsg << "\n";
+                string msg = "set";
+                asio::write(*gameRooms[nowroomID].player1Socket, asio::buffer(msg));
+                asio::write(*gameRooms[nowroomID].player2Socket, asio::buffer(msg));
+                msg = "turn#" + parts[1] + "#" + to_string(gameRooms[nowroomID].player1ID);
+                asio::write(*gameRooms[nowroomID].player1Socket, asio::buffer(msg));
+                asio::write(*gameRooms[nowroomID].player2Socket, asio::buffer(msg));
                 gameRooms[nowroomID].gamecount = 1;
             }
         }
         else if (parts[0] == "num") {
-            Sleep(100);
             nowroomID = stoi(parts[1]);
-            lock_guard<mutex> lock(gameRoomsMutex);
-            receivedMessage += "#";
-            receivedMessage += to_string(gameRooms[nowroomID].gamecount);
-            cout << receivedMessage<<"\n";
-            send(gameRooms[nowroomID].player1Socket, receivedMessage.c_str(), receivedMessage.length(), 0);
-            send(gameRooms[nowroomID].player2Socket, receivedMessage.c_str(), receivedMessage.length(), 0);
-            cout << nowroomID << " " << receivedMessage << "\n";
+            string msg = receivedMessage + "#" + to_string(gameRooms[nowroomID].gamecount);
+            asio::write(*gameRooms[nowroomID].player1Socket, asio::buffer(msg));
+            asio::write(*gameRooms[nowroomID].player2Socket, asio::buffer(msg));
         }
         else if (parts[0] == "notend") {
-            cout << "notend\n";
             nowroomID = stoi(parts[1]);
             int clientID = stoi(parts[2]);
-            lock_guard<mutex> lock(gameRoomsMutex);
-            string stmsg = "turn#";
-            stmsg += parts[1];
-            stmsg += "#";
-            Sleep(100);
-            if (gameRooms[nowroomID].gamecount % 2 == 0) {
-                if (gameRooms[nowroomID].player1ID== clientID) {
-                    gameRooms[nowroomID].notendcnt[0] = 1;
-                    cout << "0æ˜\n";
-                }
-                else if (gameRooms[nowroomID].player2ID == clientID) {
-                    gameRooms[nowroomID].notendcnt[1] = 1;
-                    cout << "1æ˜\n";
-                }
-                stmsg += to_string(gameRooms[nowroomID].player1ID);
-            }
-            else {
-                if (gameRooms[nowroomID].player1ID == clientID) {
-                    gameRooms[nowroomID].notendcnt[0] = 1;
-                    cout << "0æ˜\n";
-                }
-                else if (gameRooms[nowroomID].player2ID == clientID) {
-                    gameRooms[nowroomID].notendcnt[1] = 1;
-                    cout << "1æ˜\n";
-                }
-                stmsg += to_string(gameRooms[nowroomID].player2ID);
-            }
-            send(clientSocket, stmsg.c_str(), stmsg.length(), 0);
-            cout << nowroomID << " " << stmsg << "\n";
-            if (gameRooms[nowroomID].notendcnt[0] == 1 && gameRooms[nowroomID].notendcnt[1] == 1) {
+            string msg = "turn#" + parts[1] + "#";
+            bool isEven = (gameRooms[nowroomID].gamecount % 2 == 0);
+            int targetID = isEven ? gameRooms[nowroomID].player1ID : gameRooms[nowroomID].player2ID;
+            if (gameRooms[nowroomID].player1ID == clientID) gameRooms[nowroomID].notendcnt[0] = 1;
+            if (gameRooms[nowroomID].player2ID == clientID) gameRooms[nowroomID].notendcnt[1] = 1;
+            msg += to_string(targetID);
+            asio::write(*clientSocket, asio::buffer(msg));
+            if (gameRooms[nowroomID].notendcnt[0] && gameRooms[nowroomID].notendcnt[1]) {
                 gameRooms[nowroomID].notendcnt[0] = 0;
                 gameRooms[nowroomID].notendcnt[1] = 0;
                 gameRooms[nowroomID].gamecount++;
-                cout << "gmc: " << gameRooms[nowroomID].gamecount << "\n";
             }
         }
         else if (parts[0] == "end") {
             nowroomID = stoi(parts[1]);
             int winnerID = stoi(parts[2]);
             int result = stoi(parts[3]);
-            if (result == 1 && gameRooms[nowroomID].player1ID == winnerID) {
-                gameRooms[nowroomID].player1Status = 9;
+            if (result == 1) {
+                if (gameRooms[nowroomID].player1ID == winnerID) { 
+                    updateWinLoss(gameRooms[nowroomID].player1info.nickname, true);
+                    updateWinLoss(gameRooms[nowroomID].player2info.nickname, false);
+                    gameRooms[nowroomID].player1Status = 9;
+                }
+                if (gameRooms[nowroomID].player2ID == winnerID) {
+                    updateWinLoss(gameRooms[nowroomID].player1info.nickname, false);
+                    updateWinLoss(gameRooms[nowroomID].player2info.nickname, true);
+                    gameRooms[nowroomID].player2Status = 9; 
+                }
             }
-            else if (result == 1 && gameRooms[nowroomID].player2ID == winnerID) {
-                gameRooms[nowroomID].player2Status = 9;
-            }
-            if (gameRooms[nowroomID].player1Status == 9 || gameRooms[nowroomID].player2Status == 9) {
-                cout << nowroomID << "π¯ πÊ ∞‘¿” ¡æ∑·\n";
-                gameRooms[nowroomID].player1Status = 9;
-                gameRooms[nowroomID].player2Status = 9;
-            }
-
         }
         else if (parts[0] == "restart") {
             nowroomID = stoi(parts[1]);
             int clientID = stoi(parts[2]);
             int restart = stoi(parts[3]);
-            if (restart == 1 && gameRooms[nowroomID].player1ID == clientID) {
+            auto& room = gameRooms[nowroomID];
+            if(restart == 1 && gameRooms[nowroomID].player1ID == clientID){
                 gameRooms[nowroomID].player1Status = 1;
                 if (gameRooms[nowroomID].player2Status != 1) {
                     gameRooms[nowroomID].gamecount = 1;
                 }
             }
             else if (restart == 0 && gameRooms[nowroomID].player1ID == clientID) {
-                cout << clientID << "π¯ ≈¨∂Û¿Ãæ∆Æ ¡æ∑·\n";
-                gameRooms[nowroomID].player1Status = -1;
-                handleClientDisconnection(clientID);
-                closesocket(clientSocket);
+                
+                cout << clientID << "Î≤à ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ Ï¢ÖÎ£å\n";
+                {
+                    gameRooms[nowroomID].player1Status = -1;
+                    cout << "ÏÉÅÌÉúÎ≥ÄÍ≤ΩÏôÑÎ£å" << endl;
+                }
+                handleClientDisconnection(clientInfo.clientID);
+                cout << "Î∞© Ï†úÍ±∞ Ìï®Ïàò ÏôÑÎ£å" << endl;
+                if (clientSocket && clientSocket->is_open()) {
+                    cout << "ÏÜåÏºì Îã´Í∏∞ Ï†Ñ ÏÉÅÌÉú OK" << endl;
+                    clientSocket->close();
+                }
                 break;
             }
             else if (restart == 1 && gameRooms[nowroomID].player2ID == clientID) {
@@ -226,179 +292,183 @@ void handleClient(SOCKET clientSocket, int clientId) {
                 }
             }
             else if (restart == 0 && gameRooms[nowroomID].player2ID == clientID) {
-                cout << clientID << "π¯ ≈¨∂Û¿Ãæ∆Æ ¡æ∑·\n";
-                gameRooms[nowroomID].player2Status = -1;
-                handleClientDisconnection(clientID);
-                closesocket(clientSocket);
+                cout << clientID << "Î≤à ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ Ï¢ÖÎ£å\n";
+                {
+                    gameRooms[nowroomID].player2Status = -1;
+                    cout << "ÏÉÅÌÉúÎ≥ÄÍ≤ΩÏôÑÎ£å" << endl;
+                }
+                handleClientDisconnection(clientInfo.clientID);
+                cout << "Î∞© Ï†úÍ±∞ Ìï®Ïàò ÏôÑÎ£å" << endl; 
+                if (clientSocket && clientSocket->is_open()) {
+                    cout << "ÏÜåÏºì Îã´Í∏∞ Ï†Ñ ÏÉÅÌÉú OK" << endl;
+                    clientSocket->close();
+                }
                 break;
             }
             if (gameRooms[nowroomID].player1Status == 1 && gameRooms[nowroomID].player2Status == 1) {
                 boardsize = 0;
-                //µŒ ≈¨∂Û¿Ãæ∆Æ ∏µŒ ¿ÁΩ√¿€ µø¿«
-                cout << nowroomID << "π¯ πÊ ¿ÁΩ√¿€\n";
+                room.gamecount = 1;
+                string msg1 = "new#1";
+                string msg2 = "new#-1";
+                //Îëê ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ Î™®Îëê Ïû¨ÏãúÏûë ÎèôÏùò
+                cout << nowroomID << "Î≤à Î∞© Ïû¨ÏãúÏûë\n";
+                cout << "[RESTART] player1Status: " << room.player1Status
+                    << ", player2Status: " << room.player2Status
+                    << ", gamecount: " << room.gamecount << endl;
+
                 if (gameRooms[nowroomID].gamecount == 1) {
-                    string newmsg = "new#";
-                    newmsg += to_string(1);
-                    send(gameRooms[nowroomID].player1Socket, newmsg.c_str(), newmsg.length(), 0);
-                    cout << clientID << " " << newmsg << "\n";
-                    cout << "≈¨∂Û¿Ãæ∆Æ ¥Î±‚ ¡ﬂ: " << clientID << "\n";
-                    newmsg += "new#";
-                    newmsg += to_string(-1);
-                    send(gameRooms[nowroomID].player2Socket, newmsg.c_str(), newmsg.length(), 0);
+                    asio::write(*room.player1Socket, asio::buffer(msg1));
+                    cout << clientID << " " << msg1 << "\n";
+                    cout << "ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ ÎåÄÍ∏∞ Ï§ë: " << clientID << "\n";
+                    asio::write(*room.player2Socket, asio::buffer(msg2));
                 }
                 else if (gameRooms[nowroomID].gamecount == 2) {
-                    string newmsg = "new#";
-                    newmsg += to_string(1);
-                    send(gameRooms[nowroomID].player2Socket, newmsg.c_str(), newmsg.length(), 0);
-                    cout << clientID << " " << newmsg << "\n";
-                    cout << "≈¨∂Û¿Ãæ∆Æ ¥Î±‚ ¡ﬂ: " << clientID << "\n";
-                    newmsg = "new#";
-                    newmsg += to_string(-1);
-                    send(gameRooms[nowroomID].player1Socket, newmsg.c_str(), newmsg.length(), 0);
+                    asio::write(*room.player2Socket, asio::buffer(msg1));
+                    cout << clientID << " " << msg1 << "\n";
+                    cout << "ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ ÎåÄÍ∏∞ Ï§ë: " << clientID << "\n";
+                    asio::write(*room.player1Socket, asio::buffer(msg2));
                 }
             }
-
         }
         else if (parts[0] == "size") {
+            nowroomID = stoi(parts[1]);
             boardsize = stoi(parts[2]);
-            cout << "∫∏µÂ ≈©±‚ " << boardsize << "\n";
-            string stmsg = "start#";
-            stmsg += to_string(nowroomID);
-            stmsg += "#";
-            stmsg += to_string(boardsize);
-            // πÊø° ¿÷¥¬ µŒ ∏Ì¿« ≈¨∂Û¿Ãæ∆Æø°∞‘ ¿ÁΩ√¿€ æÀ∏≤
-            send(gameRooms[nowroomID].player1Socket, stmsg.c_str(), stmsg.length(), 0);
-            send(gameRooms[nowroomID].player2Socket, stmsg.c_str(), stmsg.length(), 0);
+            string msg = "start#" + to_string(nowroomID) + "#" + to_string(boardsize);
+            asio::write(*gameRooms[nowroomID].player1Socket, asio::buffer(msg));
+            asio::write(*gameRooms[nowroomID].player2Socket, asio::buffer(msg));
             gameRooms[nowroomID].gamecount = 1;
         }
-        else {
-            for (size_t i = 0; i < parts.size(); ++i) {
-                cout << "∫Œ∫– " << i + 1 << ": " << parts[i] << "\n";
-            }
-        }
-        //cout << "≈¨∂Û¿Ãæ∆ÆID" << msg.senderID<<"∑Œ∫Œ≈Õ ∏ﬁΩ√¡ˆ : " << msg.content << endl;
-        receivedMessage.clear();
-        string response = "º≠πˆø°º≠ √≥∏Æ øœ∑·\n";
-        //send(clientSocket, response.c_str(), response.size(), 0);
     }
     lock_guard<mutex> lock(clientsMutex);
-    clients.erase(clientId);
-    closesocket(clientSocket);
+    clients.erase(clientInfo.clientID);
 }
 
-int roomID = 0; // πÊ ID ƒ´øÓ≈Õ
-queue<pair<int, SOCKET>> waitingQueue; // ¥Î±‚ ¡ﬂ¿Œ ≈¨∂Û¿Ãæ∆Æ ∏Ò∑œ
 
-void assignClientToRoom(SOCKET clientSocket, int clientID) {
-    lock_guard<mutex> lock(gameRoomsMutex);
+
+void assignClientToRoom(shared_ptr<tcp::socket> clientSocket, UserInfo clientInfo) {
     static int boardsize = 0;
+    lock_guard<mutex> lock(gameRoomsMutex);
     if (!waitingQueue.empty()) {
-        // ¥Î±‚ ¡ﬂ¿Œ ≈¨∂Û¿Ãæ∆Æ∞° ¿÷¿∏∏È ªı∑ŒøÓ πÊ ª˝º∫
         auto waitingClient = waitingQueue.front();
         waitingQueue.pop();
 
         GameRoom room;
-        room.player1ID = waitingClient.first;
+        room.player1ID = waitingClient.first.clientID;
         room.player1Socket = waitingClient.second;
-        room.player2ID = clientID;
+        room.player1info = waitingClient.first;
+        room.player2ID = clientInfo.clientID;
         room.player2Socket = clientSocket;
+        room.player2info = clientInfo;
+        gameRooms[roomID] = room;
 
-        gameRooms[roomID] = room; // ªı∑ŒøÓ πÊø° √ﬂ∞°
-        while (boardsize == 0) { Sleep(1000); }
-        cout << "πÊ ª˝º∫: " << room.player1ID << "øÕ " << room.player2ID << "\n";
-        string stmsg = "start#";
-        stmsg += to_string(roomID++);
-        stmsg += "#";
-        stmsg += to_string(boardsize);
-        cout << clientID << " " << stmsg << "\n";
-        // πÊø° ¿÷¥¬ µŒ ∏Ì¿« ≈¨∂Û¿Ãæ∆Æø°∞‘ ∞‘¿” Ω√¿€ æÀ∏≤
-        send(room.player1Socket, stmsg.c_str(), stmsg.length(), 0);
-        send(room.player2Socket, stmsg.c_str(), stmsg.length(), 0);
-        Sleep(100);
+        int retry = 0;
+        while (boardsize == 0 && retry++ < 100) this_thread::sleep_for(chrono::milliseconds(100));
+        if (boardsize == 0) {
+            cerr << "[ERROR] boardsize Î™ª Î∞õÏïÑ assignClientToRoom Ïã§Ìå®\n";
+            return;
+        }
+
+        Sleep(1500);
+        string stmsg = "start#" + to_string(roomID++) + "#" + to_string(boardsize);
+        cout << stmsg <<endl;
+        asio::write(*room.player1Socket, asio::buffer(stmsg));
+        asio::write(*room.player2Socket, asio::buffer(stmsg));
     }
     else {
-        // ¥Î±‚ ¡ﬂ¿Œ ≈¨∂Û¿Ãæ∆Æ∞° æ¯¿∏∏È ≈•ø° √ﬂ∞°
-        waitingQueue.push({ clientID, clientSocket });
-        string newmsg = "new#1";
-        send(clientSocket, newmsg.c_str(), newmsg.length(), 0);
-        cout << clientID << " " << newmsg << "\n";
-        cout << "≈¨∂Û¿Ãæ∆Æ ¥Î±‚ ¡ﬂ: " << clientID << "\n";
-
+        waitingQueue.push({ clientInfo, clientSocket });
+        asio::write(*clientSocket, asio::buffer("new#1"));
 
         char buffer[BUFFER_SIZE];
-        string receivedMessage;
-        int boardsizeReceived = recv(clientSocket, buffer, BUFFER_SIZE, 0);
-        if (boardsizeReceived > 0) {
-            buffer[boardsizeReceived] = '\0';  // ºˆΩ≈«— µ•¿Ã≈Õ ≥°ø° NULL πÆ¿⁄ √ﬂ∞°
-            receivedMessage = string(buffer);
-            cout << receivedMessage;
-        }
-        vector<std::string> parts;
-        parts.clear();
+        asio::error_code ec;
+        size_t len = clientSocket->read_some(asio::buffer(buffer), ec);
+        if (ec || len == 0) return;
+
+        buffer[len] = '\0';
+        string receivedMessage(buffer);
         istringstream ss(receivedMessage);
         string item;
-        // '#' ±‚¡ÿ¿∏∑Œ ∫–«“
-        while (getline(ss, item, '#')) {
-            parts.push_back(item);
-        }
-        boardsize = stoi(parts[2]);
-        cout << "∫∏µÂ ≈©±‚ " << boardsize << "\n";
+        vector<string> parts;
+        while (getline(ss, item, '#')) parts.push_back(item);
+        if (parts.size() >= 3) boardsize = stoi(parts[2]);
     }
 }
 
 
 int main() {
-    WSADATA wsaData;
-    WSAStartup(MAKEWORD(2, 2), &wsaData);  // WinSock √ ±‚»≠
-    int clientIdx = 1;
-    SOCKET serverSocket, clientSocket;
+    mongoc_init();
+    try {
+        asio::io_context io;
+        tcp::acceptor acceptor(io, tcp::endpoint(tcp::v4(), PORT));
+        int clientIdx = 1;
 
-    serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (serverSocket == INVALID_SOCKET) {
-        cerr << "º“ƒœ ª˝º∫ Ω«∆–\n";
-        return 1;
-    }
+        cout << "ÏÑúÎ≤Ñ Ïã§Ìñâ Ï§ë... Ìè¨Ìä∏ " << PORT << " ÏóêÏÑú ÎåÄÍ∏∞ Ï§ë\n";
 
-    struct sockaddr_in serverAddr, clientAddr;
-    int addrLen = sizeof(clientAddr);
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(PORT);
+        while (true) {
+            shared_ptr<tcp::socket> socket = make_shared<tcp::socket>(io);
+            asio::error_code ec;
+            acceptor.accept(*socket, ec);
 
-    if (bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-        cerr << "πŸ¿Œµ˘ Ω«∆–\n";
-        return 1;
-    }
+            if (ec) {
+                cerr << "ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ Ïó∞Í≤∞ Ïã§Ìå®: " << ec.message() << "\n";
+                continue;
+            }
 
-    if (listen(serverSocket, 3) == SOCKET_ERROR) {
-        cerr << "∏ÆΩ∫¥◊ Ω«∆–\n";
-        return 1;
-    }
+            cout << "ÌÅ¥ÎùºÏù¥Ïñ∏Ìä∏ Ïó∞Í≤∞Îê®: ID = " << clientIdx << "\n";
+            {
+                lock_guard<mutex> lock(clientsMutex);
+                clients[clientIdx] = socket;
+            }
 
-    cout << "º≠πˆ∞° ≈¨∂Û¿Ãæ∆Æ∏¶ ±‚¥Ÿ∏Æ¥¬ ¡ﬂ...\n";
+            string idMsg = to_string(clientIdx);
+            asio::write(*socket, asio::buffer(idMsg));
 
-    while (true) {
-        clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &addrLen);
-        if (clientSocket == INVALID_SOCKET) {
-            cerr << "≈¨∂Û¿Ãæ∆Æ ø¨∞· Ω«∆–\n";
-            continue;
+            while (true) {
+                char buffer[BUFFER_SIZE];
+                asio::error_code err;
+                size_t len = socket->read_some(asio::buffer(buffer), err);
+                if (err || len == 0) {
+                    cerr << "ÎãâÎÑ§ÏûÑ ÏàòÏã† Ïã§Ìå®: " << err.message() << "\n";
+                    continue;
+                }
+                buffer[len] = '\0';
+                string msg(buffer);
+                // ÎãâÎÑ§ÏûÑ ÏàòÏã† Î∞è Ï≤òÎ¶¨
+                if (!ec && len > 0) {
+                    buffer[len] = '\0';
+                    string msg(buffer);
+                    if (msg.rfind("nickname#", 0) == 0) {
+                        string nickname = msg.substr(9);
+                        pair<bool, pair<int, int>> nicknameinfo = loginOrRegisterNickname(socket, nickname);
+                        if (nicknameinfo.first) {
+                            UserInfo userinfo;
+                            userinfo.wins = nicknameinfo.second.first;
+                            userinfo.losses = nicknameinfo.second.second;
+                            userinfo.nickname = nickname;
+                            userinfo.clientID = clientIdx;
+                            cout << userinfo.nickname << " ÎåÄÍ∏∞Ïó¥ Ï∂îÍ∞Ä Ï§ÄÎπÑ\n";
+                            assignClientToRoom(socket, userinfo);
+                            cout << userinfo.nickname <<" ÎåÄÍ∏∞Ïó¥ Ï∂îÍ∞Ä ÏôÑÎ£å\n";
+                            thread clientThread(handleClient, socket, userinfo);
+                            clientThread.detach();
+                            clientIdx++;
+                            break;
+                        }
+                        else {
+                            cout << "Î°úÍ∑∏Ïù∏ ÎòêÎäî ÌöåÏõêÍ∞ÄÏûÖ Ïã§Ìå®\n";
+                        }
+                    }
+                }
+            }
+
+
+
         }
-
-
-        cout << "≈¨∂Û¿Ãæ∆Æ ø¨∞·µ \n";
-        {
-            lock_guard<mutex> lock(clientsMutex);
-            clients.insert({ clientIdx, clientSocket });
-        }
-        string msg = to_string(clientIdx);
-        send(clientSocket, msg.c_str(), msg.length(), 0);
-        assignClientToRoom(clientSocket, clientIdx);
-        thread clientThread(handleClient, clientSocket, clientIdx);
-        clientThread.detach();  // Ω∫∑πµÂ∏¶ ∫–∏Æ«œø© µ∂∏≥¿˚¿∏∑Œ Ω««‡
-        clientIdx++;
     }
-
-    closesocket(serverSocket);
-    WSACleanup();  // WinSock ¡æ∑·
+    catch (const std::exception& e) {
+        cerr << "ÏÑúÎ≤Ñ ÏòàÏô∏ Î∞úÏÉù: " << e.what() << "\n";
+        mongoc_cleanup();
+        return 1;
+    }
+    mongoc_cleanup();
     return 0;
 }
