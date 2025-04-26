@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <sstream>
 #include <thread>
+#include <regex>
 #include <winsock2.h>  // Windows 소켓 라이브러리
 #pragma comment(lib, "ws2_32.lib")  // 소켓 라이브러리 링크
 #define PORT 8080

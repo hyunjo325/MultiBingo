@@ -531,6 +531,54 @@ void BingoGame::multiGame(BingoBoard& user, BingoBoard& opponent) {
 		myClientID = stoi(string(buffer));
 	}
 	cout << "클라이언트 ID : " << myClientID << "\n";
+	string nicknameMsg;
+	string nickname;
+	regex nicknamePattern("^[a-zA-Z0-9]+$");
+	while (true) {
+		cout << "닉네임을 입력하세요 (3~12자 알파벳/숫자): ";
+		cin >> nickname;
+		if (nickname.length() < 3 || nickname.length() > 12 || !regex_match(nickname, nicknamePattern)) {
+			cout << "닉네임은 3~12자의 알파벳/숫자만 가능합니다.\n";
+			continue;
+		}
+		nicknameMsg = "nickname#" + nickname;
+		send(clientSocket, nicknameMsg.c_str(), nicknameMsg.length(), 0);
+
+		int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE, 0);
+		if (bytesReceived <= 0) {
+			cerr << "서버 응답 수신 실패\n";
+			return;
+		}
+
+		buffer[bytesReceived] = '\0';
+		string response(buffer);
+
+		if (response.rfind("login#", 0) == 0 || response.rfind("register#", 0) == 0) {
+			vector<string> parts;
+			istringstream ss(response);
+			string token;
+			while (getline(ss, token, '#')) parts.push_back(token);
+
+			string mode = parts[0];
+			string nickname = parts[1];
+			int win = stoi(parts[2]);
+			int lose = stoi(parts[3]);
+
+			cout << "[" << (mode == "login" ? "로그인" : "회원가입") << "] " << nickname << "님 환영합니다.\n";
+			cout << "현재 전적 - 승: " << win << ", 패: " << lose << "\n";
+			break;
+		}
+		else if (response.rfind("error#", 0) == 0) {
+			cout << "서버 응답: " << response.substr(6) << "\n";
+			continue;
+		}
+		else {
+			cout << "알 수 없는 서버 응답: " << response << "\n";
+			continue;
+		}
+	}
+
+	Sleep(1000);
 	receivedMessage.clear();
 	thread receiveThread(&BingoGame::receiveMessages, this, clientSocket);
 	receiveThread.detach();
@@ -685,7 +733,7 @@ void BingoGame::multiGame(BingoBoard& user, BingoBoard& opponent) {
 			system("cls");
 			SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 15);
 			gotoxy(38, 2);
-			cout << "방현조 - 빙고게임" << endl;
+			cout << nickname << " - 빙고게임" << endl;
 			gotoxy(20, 1);
 			cout << "┌────────────┐";
 			gotoxy(20, 2);
@@ -714,7 +762,7 @@ void BingoGame::multiGame(BingoBoard& user, BingoBoard& opponent) {
 						receivedMessage.clear();  // 메시지 처리 후 비움
 						//system("cls");
 						gotoxy(38, 2);
-						cout << "방현조 - 빙고게임" << endl;
+						cout << nickname << " - 빙고게임" << endl;
 						gotoxy(20, 1);
 						cout << "┌────────────┐";
 						gotoxy(20, 2);
